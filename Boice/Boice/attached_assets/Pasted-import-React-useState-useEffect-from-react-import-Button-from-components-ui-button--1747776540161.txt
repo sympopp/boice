@@ -1,0 +1,131 @@
+import React, { useState, useEffect } from 'react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { AlertDialog, AlertDialogContent, AlertDialogAction, AlertDialogCancel, AlertDialogTitle } from '@/components/ui/alert-dialog';
+
+const WritingTimer = () => {
+  // State for all timers
+  const [isRunning, setIsRunning] = useState(false);
+  const [sessionTime, setSessionTime] = useState(0); // Stopwatch
+  const [dailyTimeLeft, setDailyTimeLeft] = useState(14400); // 4 hours in seconds
+  const [mayStopTime, setMayStopTime] = useState(600); // 10 minutes in seconds
+  const [mustStopTime, setMustStopTime] = useState(3000); // 50 minutes in seconds
+  const [lastSessionDate, setLastSessionDate] = useState(null);
+  const [showEarlyStopDialog, setShowEarlyStopDialog] = useState(false);
+
+  // Check if we need to reset daily timer
+  useEffect(() => {
+    const today = new Date().toLocaleDateString();
+    if (lastSessionDate !== today) {
+      setDailyTimeLeft(14400); // Reset to 4 hours
+      setLastSessionDate(today);
+    }
+  }, [lastSessionDate]);
+
+  // Timer logic
+  useEffect(() => {
+    let interval;
+    if (isRunning) {
+      interval = setInterval(() => {
+        setSessionTime(prev => prev + 1);
+        setDailyTimeLeft(prev => Math.max(0, prev - 1));
+        setMayStopTime(prev => Math.max(0, prev - 1));
+        setMustStopTime(prev => Math.max(0, prev - 1));
+
+        // Auto-stop when must stop timer reaches 0
+        if (mustStopTime <= 1) {
+          handleStop();
+        }
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isRunning, mustStopTime]);
+
+  const handleStart = () => {
+    // Calculate must-stop time based on remaining daily time
+    let newMustStopTime = 3000; // Default 50 minutes
+    if (dailyTimeLeft < 3600 && dailyTimeLeft > 3000) {
+      // If less than 60 mins but more than 50 mins left
+      newMustStopTime = dailyTimeLeft - 600; // Leave 10 mins for next session
+    }
+
+    setSessionTime(0);
+    setMayStopTime(600);
+    setMustStopTime(newMustStopTime);
+    setIsRunning(true);
+  };
+
+  const handleStop = () => {
+    if (mayStopTime > 0 && !showEarlyStopDialog) {
+      setShowEarlyStopDialog(true);
+      return;
+    }
+    setIsRunning(false);
+    setShowEarlyStopDialog(false);
+  };
+
+  const formatTime = (seconds) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+    
+    if (hours > 0) {
+      return `${hours}:${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+    }
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+  };
+
+  return (
+    <div className="w-full max-w-md mx-auto p-4">
+      <Card>
+        <CardContent className="p-6">
+          <div className="grid grid-cols-2 gap-4 mb-6">
+            <div className="text-center">
+              <div className="text-sm text-gray-500 mb-1">Daily Time Left</div>
+              <div className="text-2xl font-mono">{formatTime(dailyTimeLeft)}</div>
+            </div>
+            <div className="text-center">
+              <div className="text-sm text-gray-500 mb-1">Session Time</div>
+              <div className="text-2xl font-mono">{formatTime(sessionTime)}</div>
+            </div>
+            <div className="text-center">
+              <div className="text-sm text-gray-500 mb-1">May Stop In</div>
+              <div className="text-2xl font-mono">{formatTime(mayStopTime)}</div>
+            </div>
+            <div className="text-center">
+              <div className="text-sm text-gray-500 mb-1">Must Stop In</div>
+              <div className="text-2xl font-mono">{formatTime(mustStopTime)}</div>
+            </div>
+          </div>
+
+          <Button 
+            className="w-full"
+            onClick={isRunning ? handleStop : handleStart}
+            disabled={dailyTimeLeft <= 0}
+          >
+            {isRunning ? 'Stop Session' : 'Start Session'}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <AlertDialog open={showEarlyStopDialog} onOpenChange={setShowEarlyStopDialog}>
+        <AlertDialogContent>
+          <AlertDialogTitle>
+            Are you sure you want to stop before 10 minutes?
+          </AlertDialogTitle>
+          <div className="flex justify-end gap-4 mt-4">
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => {
+              setIsRunning(false);
+              setShowEarlyStopDialog(false);
+            }}>
+              Yes, Stop Session
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+};
+
+export default WritingTimer;

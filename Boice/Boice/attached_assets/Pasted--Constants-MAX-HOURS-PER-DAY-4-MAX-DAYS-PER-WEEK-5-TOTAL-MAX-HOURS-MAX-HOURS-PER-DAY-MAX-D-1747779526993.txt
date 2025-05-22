@@ -1,0 +1,153 @@
+// Constants
+MAX_HOURS_PER_DAY = 4
+MAX_DAYS_PER_WEEK = 5
+TOTAL_MAX_HOURS = MAX_HOURS_PER_DAY * MAX_DAYS_PER_WEEK
+STAGES = ["prewriting", "writing", "rewriting", "skillbuilding"]
+HOURS_PER_STAGE = TOTAL_MAX_HOURS / STAGES.length  // 5 hours per stage
+
+// State variables
+hoursWorked = {
+    "prewriting": 0,
+    "writing": 0,
+    "rewriting": 0,
+    "skillbuilding": 0
+}
+totalHoursWorked = 0
+currentDay = 1
+isBackHalf = false
+initialPhaseComplete = false
+
+// UI Elements
+writingTypeDropdown = document.getElementById("writing-type-dropdown")
+weeklyProgressDisplay = document.getElementById("weekly-progress")
+
+// Function called at the beginning of each week
+function startNewWeek():
+    hoursWorked = {"prewriting": 0, "writing": 0, "rewriting": 0, "skillbuilding": 0}
+    totalHoursWorked = 0
+    currentDay = 1
+    isBackHalf = false
+    initialPhaseComplete = false
+    updateUI()
+
+// Function called after each work session
+function completeSession(stage, hoursSpent):
+    // Update hours worked
+    hoursWorked[stage] += hoursSpent
+    totalHoursWorked += hoursSpent
+    
+    // Check if initial phase is complete
+    if (currentDay >= 3 || totalHoursWorked >= 8):
+        initialPhaseComplete = true
+    
+    // Check for front/back half transition (only if not already in back half)
+    if (initialPhaseComplete && !isBackHalf):
+        daysRemaining = MAX_DAYS_PER_WEEK - currentDay + 1
+        maxHoursLeft = daysRemaining * MAX_HOURS_PER_DAY
+        
+        if (maxHoursLeft <= totalHoursWorked):
+            isBackHalf = true
+            console.log("Entering back half of the week - balance restrictions now active")
+    
+    // Update UI after session
+    updateUI()
+
+// Function called at the end of each day
+function endDay():
+    currentDay += 1
+    updateUI()
+
+// Function to update dropdown options based on stage availability
+function updateDropdownOptions():
+    // First, clear existing options
+    writingTypeDropdown.innerHTML = ""
+    
+    // Default option
+    let defaultOption = document.createElement("option")
+    defaultOption.text = "Select writing type..."
+    defaultOption.value = ""
+    writingTypeDropdown.add(defaultOption)
+    
+    // Add available stages as options
+    for (stage of STAGES):
+        if (isStageAvailable(stage)):
+            let option = document.createElement("option")
+            option.text = capitalizeFirstLetter(stage)
+            option.value = stage
+            writingTypeDropdown.add(option)
+        }
+    }
+
+// Function to determine if a stage should be available in the dropdown
+function isStageAvailable(stage):
+    // In front half, all stages are available
+    if (!isBackHalf):
+        return true
+    
+    // In back half, check for severe imbalance
+    stagePercentage = (hoursWorked[stage] / totalHoursWorked) * 100
+    
+    // If this stage has >35% of total time AND at least one other stage has <15%,
+    // remove it from dropdown options to encourage balance
+    if (stagePercentage > 35):
+        // Check if any stage is severely underutilized
+        for (otherStage of STAGES):
+            if (otherStage !== stage):
+                otherPercentage = (hoursWorked[otherStage] / totalHoursWorked) * 100
+                if (otherPercentage < 15):
+                    // Hide overused stage from dropdown
+                    return false
+        }
+    }
+    
+    return true
+
+// Function to update the weekly progress display
+function updateWeeklyProgressDisplay():
+    for (stage of STAGES):
+        let hoursForStage = hoursWorked[stage]
+        let element = document.getElementById(`${stage}-progress`)
+        element.textContent = formatTime(hoursForStage) + " / " + formatTime(HOURS_PER_STAGE)
+        
+        // Color coding based on balance
+        if (isBackHalf):
+            stagePercentage = (hoursForStage / totalHoursWorked) * 100
+            if (stagePercentage > 35):
+                element.style.color = "orange"  // Overused
+            else if (stagePercentage < 15 && totalHoursWorked > 8):
+                element.style.color = "red"     // Underused
+            else:
+                element.style.color = "green"   // Balanced
+        }
+    }
+    
+    // Update total
+    let totalElement = document.getElementById("total-progress")
+    totalElement.textContent = formatTime(totalHoursWorked) + " / " + formatTime(TOTAL_MAX_HOURS)
+
+// Helper function to update all UI elements
+function updateUI():
+    updateDropdownOptions()
+    updateWeeklyProgressDisplay()
+    
+    // Update phase indicator if needed
+    if (isBackHalf):
+        document.getElementById("phase-indicator").textContent = "Back Half - Balance Focus"
+        document.getElementById("phase-indicator").style.color = "#FF7700"
+    } else if (initialPhaseComplete):
+        document.getElementById("phase-indicator").textContent = "Front Half - Flexibility"
+        document.getElementById("phase-indicator").style.color = "#0077FF"
+    } else:
+        document.getElementById("phase-indicator").textContent = "Initial Phase - Complete Freedom"
+        document.getElementById("phase-indicator").style.color = "#00AA00"
+    }
+
+// Helper function to format time
+function formatTime(hours):
+    let h = Math.floor(hours)
+    let m = Math.round((hours - h) * 60)
+    return `${h}:${m.toString().padStart(2, '0')}`
+
+// Helper function to capitalize first letter
+function capitalizeFirstLetter(string):
+    return string.charAt(0).toUpperCase() + string.slice(1)

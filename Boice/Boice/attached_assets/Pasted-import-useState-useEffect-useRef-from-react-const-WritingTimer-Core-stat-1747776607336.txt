@@ -1,0 +1,908 @@
+import { useState, useEffect, useRef } from 'react';
+
+const WritingTimer = () => {
+  // Core state - 4 hours = 14400 seconds
+  const [isRunning, setIsRunning] = useState(false);
+  const [sessionTime, setSessionTime] = useState(0);
+  const [dailyTimeLeft, setDailyTimeLeft] = useState(14400);
+  const [sessionType, setSessionType] = useState('');
+  const [projectTitle, setProjectTitle] = useState('');
+  const [sessionPlan, setSessionPlan] = useState('');
+  const [processNotes, setProcessNotes] = useState('');
+  const [dailyPlan, setDailyPlan] = useState('');
+  const [sessionsCompleted, setSessionsCompleted] = useState([]);
+  const [mayStopTime, setMayStopTime] = useState(600); // 10min
+  const [mustStopTime, setMustStopTime] = useState(3000); // 50min
+  const [sessionStartTime, setSessionStartTime] = useState(null);
+  
+  // Dialog state
+  const [showPlanDialog, setShowPlanDialog] = useState(false);
+  const [showEarlyStopDialog, setShowEarlyStopDialog] = useState(false);
+  const [showManualLog, setShowManualLog] = useState(false);
+  const [showSessionSummary, setShowSessionSummary] = useState(false);
+  const [sessionSummary, setSessionSummary] = useState('');
+  
+  // Manual session state
+  const [manualSession, setManualSession] = useState({
+    type: '',
+    title: '',
+    duration: '',
+    startTime: '',
+    notes: ''
+  });
+  
+  // Weekly time budgets with DIRECT ADJUSTMENT for 4 hours of prewriting
+  // (5 hours = 18000 seconds, 4 hours = 14400 seconds)
+  const [weeklyTimeLeft, setWeeklyTimeLeft] = useState({
+    prewriting: 3600,       // 1 hour left (5h - 4h = 1h)
+    writing: 18000,         // Still 5 hours
+    rewriting: 18000,       // Still 5 hours
+    skillbuilding: 18000    // Still 5 hours
+  });
+  
+  // Worker ref for background timing
+  const workerRef = useRef(null);
+  
+  // Load data from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedData = localStorage.getItem('writingTimerData');
+      if (savedData) {
+        const data = JSON.parse(savedData);
+        console.log("Loaded data:", data);
+        // Check if today is a new day
+        const today = new Date().toLocaleDateString();
+        if (data.lastDate !== today) {
+          // New day - reset daily time and sessions
+          setDailyTimeLeft(14400); // 4h
+          setSessionsCompleted([]);
+          setDailyPlan('');
+          
+          // Show plan dialog only if daily timer is full
+          setShowPlanDialog(true);
+        } else {
+          // Same day - restore state but FORCE 4 hours for dailyTimeLeft
+          console.log("Forcing daily time to 4 hours regardless of saved value");
+          setDailyTimeLeft(FOUR_HOURS_IN_SECONDS); // FORCE 4 hours
+          setSessionsCompleted(data.sessionsCompleted || []);
+          setDailyPlan(data.dailyPlan || '');
+          setWeeklyTimeLeft(data.weeklyTimeLeft || {
+            prewriting: 18000,
+            writing: 18000,
+            rewriting: 18000,
+            skillbuilding: 18000
+          });
+          
+          // Show plan dialog if we have a full day's time and no plan set
+          setShowPlanDialog(data.dailyPlan === '' || data.dailyTimeLeft === 14400);
+        }
+        
+        // Check if this is a new week
+        const lastDate = new Date(data.lastDate);
+        const currentDate = new Date();
+        const lastSunday = new Date(currentDate);
+        lastSunday.setDate(currentDate.getDate() - currentDate.getDay());
+        lastSunday.setHours(0, 0, 0, 0);
+        
+        // If last saved date is before the start of this week, reset weekly times
+        if (lastDate < lastSunday) {
+          setWeeklyTimeLeft({
+            prewriting: 18000,
+            writing: 18000,
+            rewriting: 18000,
+            skillbuilding: 18000
+          });
+        }
+      } else {
+        // First time use - start with 4 hours
+        setDailyTimeLeft(14400);
+        
+        // ONE-TIME ADJUSTMENT: Record that 4 hours of prewriting was done yesterday
+        // This adjustment only happens if we've never saved data before
+        console.log("First time initialization - applying one-time adjustment for previous prewriting");
+        setWeeklyTimeLeft({
+          prewriting: 18000 - 14400, // 5h - 4h = 1h remaining for prewriting
+          writing: 18000,            // Normal 5h for other types
+          rewriting: 18000, 
+          skillbuilding: 18000
+        });
+        
+        setShowPlanDialog(true);
+      }
+    } catch (error) {
+      console.error("Error loading data:", error);
+      // If error, reset to fresh state with 4 hours
+      setDailyTimeLeft(14400);
+      setShowPlanDialog(true);
+    }
+    
+    // Initialize worker
+    const workerCode = `
+      let isRunning = false;
+      let sessionTime = 0;
+      let dailyTimeLeft = 14400;
+      let weeklyTypeTimeLeft = 18000;
+      let mayStopTime = 600;
+      let mustStopTime = 3000;
+      let timerInterval = null;
+      let sessionType = '';
+
+      self.onmessage = function(e) {
+        const { type, payload } = e.data;
+
+        switch (type) {
+          case 'START':
+            isRunning = true;
+            sessionTime = 0;
+            mayStopTime = 600;
+            mustStopTime = payload.mustStopTime || 3000;
+            dailyTimeLeft = payload.dailyTimeLeft;
+            weeklyTypeTimeLeft = payload.weeklyTypeTimeLeft;
+            sessionType = payload.sessionType;
+            startTimer();
+            break;
+
+          case 'STOP':
+            isRunning = false;
+            clearInterval(timerInterval);
+            break;
+
+          default:
+            break;
+        }
+      };
+
+      function startTimer() {
+        clearInterval(timerInterval);
+        
+        timerInterval = setInterval(() => {
+          if (!isRunning) return;
+
+          sessionTime++;
+          dailyTimeLeft = Math.max(0, dailyTimeLeft - 1);
+          weeklyTypeTimeLeft = Math.max(0, weeklyTypeTimeLeft - 1);
+          mayStopTime = Math.max(0, mayStopTime - 1);
+          mustStopTime = Math.max(0, mustStopTime - 1);
+
+          self.postMessage({
+            type: 'TICK',
+            payload: {
+              sessionTime,
+              dailyTimeLeft,
+              weeklyTypeTimeLeft,
+              mayStopTime,
+              mustStopTime,
+              sessionType
+            }
+          });
+
+          if (mayStopTime === 0) {
+            self.postMessage({ type: 'MAY_STOP' });
+          }
+
+          if (mustStopTime === 0 || dailyTimeLeft === 0 || weeklyTypeTimeLeft === 0) {
+            self.postMessage({ type: 'MUST_STOP' });
+            isRunning = false;
+            clearInterval(timerInterval);
+          }
+        }, 1000);
+      }
+    `;
+    
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    workerRef.current = new Worker(URL.createObjectURL(blob));
+
+    workerRef.current.onmessage = (e) => {
+      const { type, payload } = e.data;
+      
+      switch (type) {
+        case 'TICK':
+          setSessionTime(payload.sessionTime);
+          setDailyTimeLeft(payload.dailyTimeLeft);
+          setWeeklyTimeLeft(prev => ({
+            ...prev,
+            [payload.sessionType]: payload.weeklyTypeTimeLeft
+          }));
+          setMayStopTime(payload.mayStopTime);
+          setMustStopTime(payload.mustStopTime);
+          break;
+          
+        case 'MAY_STOP':
+          // Sound or notification could go here
+          break;
+          
+        case 'MUST_STOP':
+          // Auto-stop the session
+          stopSession(true);
+          break;
+      }
+    };
+    
+    return () => {
+      if (workerRef.current) {
+        workerRef.current.terminate();
+      }
+    };
+  }, []);
+
+  // Save data to localStorage
+  useEffect(() => {
+    try {
+      const today = new Date().toLocaleDateString();
+      
+      // Log the data we're saving for debugging
+      console.log("Saving data to localStorage:", {
+        dailyTimeLeft,
+        weeklyTimeLeft,
+        sessionsCompletedCount: sessionsCompleted.length,
+        hasDailyPlan: !!dailyPlan,
+        lastDate: today
+      });
+      
+      localStorage.setItem('writingTimerData', JSON.stringify({
+        dailyTimeLeft,
+        weeklyTimeLeft,
+        sessionsCompleted,
+        dailyPlan,
+        lastDate: today
+      }));
+    } catch (error) {
+      console.error("Error saving data:", error);
+    }
+  }, [dailyTimeLeft, weeklyTimeLeft, sessionsCompleted, dailyPlan]);
+
+  // Format time display
+  function formatTime(seconds) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    
+    if (hours > 0) {
+      return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${minutes}:${secs.toString().padStart(2, '0')}`;
+  }
+  
+  // Calculate maximum session time based on improved logic from second version
+  function calculateMaxSessionTime(dailyRemaining, weeklyTypeRemaining) {
+    // Use the smaller of the two remaining times
+    const minRemaining = Math.min(dailyRemaining, weeklyTypeRemaining);
+    
+    // If less than 10 minutes left, just use what's left
+    if (minRemaining <= 600) {
+      return minRemaining;
+    }
+    
+    // If between 10-60 minutes remain, handle specially
+    if (minRemaining < 3600) {
+      // If 50-60 minutes remain, leave 10 minutes for next session
+      if (minRemaining > 3000) {
+        return minRemaining - 600;
+      }
+      // If 10-50 minutes remain, use all remaining time
+      return minRemaining;
+    }
+    
+    // Default for larger amounts: 50 minute session
+    return 3000;
+  }
+  
+  // Start a session
+  function handleStart() {
+    if (!sessionType) {
+      alert("Please select a writing type first.");
+      return;
+    }
+    
+    if (!projectTitle.trim()) {
+      alert("Please enter a project title before starting.");
+      return;
+    }
+    
+    // Calculate session time limits with improved logic
+    const weeklyTypeTime = weeklyTimeLeft[sessionType];
+    const newMustStopTime = calculateMaxSessionTime(dailyTimeLeft, weeklyTypeTime);
+    
+    const now = new Date();
+    setSessionStartTime(now);
+    setIsRunning(true);
+    setSessionTime(0);
+    setMayStopTime(600); // 10 minutes minimum
+    setMustStopTime(newMustStopTime);
+    
+    workerRef.current?.postMessage({
+      type: 'START',
+      payload: {
+        dailyTimeLeft,
+        weeklyTypeTimeLeft: weeklyTypeTime,
+        mustStopTime: newMustStopTime,
+        sessionType
+      }
+    });
+  }
+  
+  // Handle stop button click
+  function handleStopClick() {
+    const isManualStop = mustStopTime > 0;  // Not an auto-stop at must-stop time
+    const isInFirstTenMinutes = mayStopTime > 0;  // Still in first 10 minutes
+    const hasRemainingTime = dailyTimeLeft > 0 && weeklyTimeLeft[sessionType] > 0;  // Still have time left
+
+    if (isManualStop && isInFirstTenMinutes && hasRemainingTime) {
+      setShowEarlyStopDialog(true);
+      return;
+    }
+    
+    stopSession();
+  }
+  
+  // Stop the session
+  function stopSession(isAutoStop = false) {
+    // Clear timer
+    if (workerRef.current) {
+      workerRef.current.postMessage({ type: 'STOP' });
+    }
+    
+    if (sessionTime > 0) {
+      const now = new Date();
+      const endTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const startTime = sessionStartTime 
+        ? sessionStartTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : new Date(now.getTime() - sessionTime * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      
+      // Save the session
+      const newSession = {
+        type: sessionType,
+        title: projectTitle,
+        startTime: startTime,
+        endTime: endTime,
+        duration: sessionTime,
+        plan: sessionPlan,
+        notes: processNotes
+      };
+      
+      // Log session details to help debug weekly tracking
+      console.log(`Session completed: ${sessionType} - ${Math.floor(sessionTime/60)} minutes`);
+      console.log(`Weekly time before: ${formatTime(weeklyTimeLeft[sessionType])}`);
+      console.log(`Weekly time after: ${formatTime(Math.max(0, weeklyTimeLeft[sessionType] - sessionTime))}`);
+      
+      setSessionsCompleted(prev => [...prev, newSession]);
+      
+      // Create summary for export
+      const minutes = Math.floor(sessionTime / 60);
+      const summary = `Session Summary:
+Type: ${sessionType}
+Title: ${projectTitle}
+Time: ${startTime} - ${endTime}
+Duration: ${minutes} minutes
+${sessionPlan ? `Plan: ${sessionPlan}` : ''}
+${processNotes ? `Notes: ${processNotes}` : ''}`;
+      
+      setSessionSummary(summary);
+      
+      if (!isAutoStop) {
+        setShowSessionSummary(true);
+      }
+    }
+    
+    // Reset session state
+    setIsRunning(false);
+    setSessionStartTime(null);
+    setSessionType('');
+    setProjectTitle('');
+    setSessionPlan('');
+    setProcessNotes('');
+    setShowEarlyStopDialog(false);
+    
+    // If daily time is now depleted, show plan dialog for tomorrow
+    if (dailyTimeLeft === 0) {
+      setShowPlanDialog(true);
+    }
+  }
+  
+  // Generate summary for Obsidian
+  function generateDailySummary() {
+    const today = new Date().toLocaleDateString();
+    const formattedDate = today.replace(/\//g, '-');
+    
+    const totalDuration = sessionsCompleted.reduce((total, session) => total + session.duration, 0);
+    const totalMinutes = Math.floor(totalDuration / 60);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    
+    let summary = `# ${formattedDate} Daily Writing Log\n\n`;
+    
+    summary += `## plan\n${dailyPlan || '[No plan set]'}\n\n`;
+    summary += `## reflection\n[Your reflections on today's writing...]\n\n`;
+    
+    summary += `## sessions\n`;
+    sessionsCompleted.forEach((session, index) => {
+      summary += `### Session ${index + 1}\n`;
+      summary += `- stage: ${session.type}\n`;
+      summary += `- project: ${session.title}\n`;
+      summary += `- start time: ${session.startTime}\n`;
+      summary += `- duration: ${Math.floor(session.duration / 60)} minutes\n`;
+      if (session.plan) summary += `- plan: ${session.plan}\n`;
+      if (session.notes) summary += `- process notes: ${session.notes}\n`;
+      summary += '\n';
+    });
+    
+    summary += `## stats\n`;
+    summary += `- Sessions completed: ${sessionsCompleted.length}\n`;
+    summary += `- Total time: ${hours}:${minutes.toString().padStart(2, '0')}\n`;
+    summary += `- Daily goal progress: ${Math.min(100, Math.round((totalDuration / 14400) * 100))}%\n\n`;
+    
+    summary += `## weekly progress\n`;
+    Object.entries(weeklyTimeLeft).forEach(([type, remaining]) => {
+      const used = 18000 - remaining;
+      const usedHours = Math.floor(used / 3600);
+      const usedMinutes = Math.floor((used % 3600) / 60);
+      summary += `- ${type}: ${usedHours}:${usedMinutes.toString().padStart(2, '0')} / 5:00\n`;
+    });
+    
+    return summary;
+  }
+  
+  // Copy text to clipboard
+  function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+      alert('Copied to clipboard!');
+    }).catch(err => {
+      console.error('Failed to copy: ', err);
+    });
+  }
+  
+  // Handle manual log submission
+  function handleManualLog() {
+    if (!manualSession.type || !manualSession.title || !manualSession.duration) {
+      alert("Please fill in all required fields");
+      return;
+    }
+    
+    const durationInSeconds = parseInt(manualSession.duration) * 60;
+    const startTimeString = manualSession.startTime || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    
+    // Log manual entry details to debug weekly tracking
+    console.log(`Manual session: ${manualSession.type} - ${manualSession.duration} minutes`);
+    console.log(`Weekly time before: ${formatTime(weeklyTimeLeft[manualSession.type])}`);
+    console.log(`Weekly time after: ${formatTime(Math.max(0, weeklyTimeLeft[manualSession.type] - durationInSeconds))}`);
+    
+    // Add to completed sessions
+    const newSession = {
+      type: manualSession.type,
+      title: manualSession.title,
+      startTime: startTimeString,
+      endTime: "manual entry",
+      duration: durationInSeconds,
+      plan: "",
+      notes: manualSession.notes || "Manual entry"
+    };
+    
+    // Update both daily and weekly time budgets
+    setDailyTimeLeft(prev => Math.max(0, prev - durationInSeconds));
+    setWeeklyTimeLeft(prev => ({
+      ...prev,
+      [manualSession.type]: Math.max(0, prev[manualSession.type] - durationInSeconds)
+    }));
+    
+    setSessionsCompleted(prev => [...prev, newSession]);
+    
+    // Reset and close
+    setManualSession({
+      type: '',
+      title: '',
+      duration: '',
+      startTime: '',
+      notes: ''
+    });
+    setShowManualLog(false);
+  }
+  
+  // Handle saving daily plan
+  function handleSavePlan() {
+    if (!dailyPlan.trim()) {
+      alert("Please enter a plan for today");
+      return;
+    }
+    
+    setShowPlanDialog(false);
+  }
+  
+  // If showing the plan dialog, only show that
+  if (showPlanDialog) {
+    return (
+      <div className="fixed inset-0 flex items-center justify-center bg-gray-100">
+        <div className="bg-white p-6 rounded-lg shadow-md max-w-md w-full">
+          <h2 className="text-xl font-semibold mb-4">Plan for Today's Writing</h2>
+          <p className="text-gray-600 mb-4">
+            Setting clear intentions will help you stay focused during your writing sessions.
+          </p>
+          <textarea
+            value={dailyPlan}
+            onChange={(e) => setDailyPlan(e.target.value)}
+            placeholder="What do you plan to accomplish in your writing today?"
+            className="w-full p-2 border border-gray-300 rounded min-h-24 mb-4"
+          />
+          <div className="flex justify-end">
+            <button 
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              onClick={handleSavePlan}
+            >
+              Start My Day
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  
+  return (
+    <div className="max-w-md mx-auto p-4 bg-white rounded-lg shadow-md">
+      {/* Daily Plan Banner */}
+      <div className="mb-4">
+        {dailyPlan && (
+          <div className="p-3 bg-indigo-50 rounded border border-indigo-100 mb-2">
+            <div className="text-indigo-700 font-medium">Today's Plan:</div>
+            <div className="text-indigo-600">{dailyPlan}</div>
+          </div>
+        )}
+        
+        {/* Current Session Plan */}
+        {isRunning && sessionPlan && (
+          <div className="p-3 bg-blue-50 rounded border border-blue-100 mt-2">
+            <div className="text-blue-700 font-medium">Current Session Plan:</div>
+            <div className="text-blue-600">{sessionPlan}</div>
+          </div>
+        )}
+      </div>
+      
+      {/* Session Info */}
+      {isRunning && (
+        <div className="text-center mb-4 p-2 bg-gray-50 rounded">
+          <div className="text-sm">
+            <span className="font-medium text-gray-700">Current Session:</span>
+            <span className="ml-1 text-blue-600 font-bold capitalize">{sessionType}</span>
+            {projectTitle && (
+              <span className="ml-1">— <span className="text-gray-900">{projectTitle}</span></span>
+            )}
+          </div>
+          {sessionStartTime && (
+            <div className="text-xs text-gray-500 mt-1">
+              Started at {sessionStartTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* Timer Display */}
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <div className="text-center">
+          <div className="text-sm text-gray-500 mb-1">Session Time</div>
+          <div className="text-2xl font-mono">{formatTime(sessionTime)}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-sm text-gray-500 mb-1">Daily Time Left</div>
+          <div className="text-2xl font-mono">{formatTime(dailyTimeLeft)}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-sm text-gray-500 mb-1">May Stop In</div>
+          <div className="text-2xl font-mono">{formatTime(mayStopTime)}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-sm text-gray-500 mb-1">Must Stop In</div>
+          <div className="text-2xl font-mono">{formatTime(mustStopTime)}</div>
+        </div>
+      </div>
+      
+      {/* Session Setup */}
+      {!isRunning && (
+        <div>
+          <div className="mb-4">
+            <label className="block text-sm text-gray-700 mb-1">Writing Type</label>
+            <select 
+              value={sessionType}
+              onChange={(e) => setSessionType(e.target.value)}
+              className="w-full p-2 border border-gray-300 rounded"
+              disabled={dailyTimeLeft <= 0}
+            >
+              <option value="">Select writing type...</option>
+              <option value="prewriting" disabled={weeklyTimeLeft.prewriting <= 0}>
+                Prewriting {weeklyTimeLeft.prewriting <= 0 ? "(No time left)" : ""}
+              </option>
+              <option value="writing" disabled={weeklyTimeLeft.writing <= 0}>
+                Writing {weeklyTimeLeft.writing <= 0 ? "(No time left)" : ""}
+              </option>
+              <option value="rewriting" disabled={weeklyTimeLeft.rewriting <= 0}>
+                Rewriting {weeklyTimeLeft.rewriting <= 0 ? "(No time left)" : ""}
+              </option>
+              <option value="skillbuilding" disabled={weeklyTimeLeft.skillbuilding <= 0}>
+                Skillbuilding {weeklyTimeLeft.skillbuilding <= 0 ? "(No time left)" : ""}
+              </option>
+            </select>
+          </div>
+          
+          {sessionType && (
+            <div className="mb-4">
+              <label className="block text-sm text-gray-700 mb-1">Project Title <span className="text-red-500">*</span></label>
+              <input 
+                type="text"
+                value={projectTitle}
+                onChange={(e) => setProjectTitle(e.target.value)}
+                placeholder="e.g. Novel Chapter 3, Blog Post"
+                className="w-full p-2 border border-gray-300 rounded"
+              />
+            </div>
+          )}
+          
+          {sessionType && projectTitle && (
+            <div className="mb-4">
+              <label className="block text-sm text-gray-700 mb-1">Session Plan (optional)</label>
+              <input 
+                type="text"
+                value={sessionPlan}
+                onChange={(e) => setSessionPlan(e.target.value)}
+                placeholder="What will you work on specifically?"
+                className="w-full p-2 border border-gray-300 rounded"
+              />
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* Process Notes */}
+      {isRunning && (
+        <div className="mb-4">
+          <label className="block text-sm text-gray-700 mb-1">Process Notes</label>
+          <textarea
+            value={processNotes}
+            onChange={(e) => setProcessNotes(e.target.value)}
+            placeholder="Record your thoughts, insights, or issues as you write..."
+            className="w-full p-2 border border-gray-300 rounded h-32"
+          />
+        </div>
+      )}
+      
+      {/* Start/Stop Buttons */}
+      <div className="flex gap-2 mb-6">
+        <button
+          className={`flex-1 px-4 py-2 rounded font-medium ${
+            isRunning 
+              ? 'bg-red-600 text-white hover:bg-red-700' 
+              : 'bg-blue-600 text-white hover:bg-blue-700'
+          } ${
+            ((!sessionType || !projectTitle) && !isRunning) || dailyTimeLeft <= 0
+              ? 'opacity-50 cursor-not-allowed'
+              : ''
+          }`}
+          onClick={isRunning ? handleStopClick : handleStart}
+          disabled={((!sessionType || !projectTitle) && !isRunning) || dailyTimeLeft <= 0}
+        >
+          {isRunning ? 'Stop Session' : 'Start Session'}
+        </button>
+        
+        {!isRunning && (
+          <button
+            className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-100"
+            onClick={() => setShowManualLog(true)}
+          >
+            Log Manual
+          </button>
+        )}
+      </div>
+      
+      {/* Weekly Progress */}
+      <div className="mt-2 text-xs text-gray-500 border-t pt-2">
+        <div className="text-center font-medium mb-2">Weekly Progress (5h each)</div>
+        <div className="space-y-1">
+          <div className="flex justify-between">
+            <span>Prewriting:</span>
+            <span>{formatTime(18000 - weeklyTimeLeft.prewriting)} / 5:00</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Writing:</span>
+            <span>{formatTime(18000 - weeklyTimeLeft.writing)} / 5:00</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Rewriting:</span>
+            <span>{formatTime(18000 - weeklyTimeLeft.rewriting)} / 5:00</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Skillbuilding:</span>
+            <span>{formatTime(18000 - weeklyTimeLeft.skillbuilding)} / 5:00</span>
+          </div>
+          <div className="border-t pt-1 flex justify-between font-medium">
+            <span>Total:</span>
+            <span>{formatTime(Object.values(weeklyTimeLeft).reduce((total, time) => 
+              total + (18000 - time), 0))} / 20:00</span>
+          </div>
+        </div>
+      </div>
+      
+      {/* Completed Sessions */}
+      {sessionsCompleted.length > 0 && (
+        <div className="mt-4 border-t pt-4">
+          <div className="flex justify-between items-center mb-3">
+            <h3 className="text-sm font-medium text-gray-700">Today's Sessions:</h3>
+            <button 
+              className="text-xs px-2 py-1 bg-gray-200 rounded hover:bg-gray-300"
+              onClick={() => copyToClipboard(generateDailySummary())}
+              title="Copy daily summary for Obsidian"
+            >
+              Export to Obsidian
+            </button>
+          </div>
+          <div className="space-y-2">
+            {sessionsCompleted.map((session, index) => (
+              <div 
+                key={index} 
+                className="p-2 bg-gray-50 rounded text-xs cursor-pointer hover:bg-gray-100"
+                onClick={() => copyToClipboard(`Stage: ${session.type}\nProject: ${session.title}\nTime: ${session.startTime} - ${session.endTime}\nDuration: ${Math.floor(session.duration / 60)} min\n${session.notes ? `Process Notes: ${session.notes}` : ''}`)}
+              >
+                <div className="font-medium">{session.title}</div>
+                <div className="text-gray-700">{session.type} • {Math.floor(session.duration / 60)} min</div>
+                {session.notes && (
+                  <div className="text-gray-600 italic mt-1 text-xs">
+                    {session.notes.length > 60 ? session.notes.substring(0, 60) + '...' : session.notes}
+                  </div>
+                )}
+              </div>
+            ))}
+            
+            <div className="flex justify-between text-xs mt-2 font-medium">
+              <span>Total today:</span>
+              <span>
+                {formatTime(sessionsCompleted.reduce((total, s) => total + s.duration, 0))}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Early Stop Dialog */}
+      {showEarlyStopDialog && (
+        <div className="fixed inset-0 flex items-center justify-center z-20">
+          <div className="absolute inset-0 bg-black bg-opacity-50" onClick={() => setShowEarlyStopDialog(false)} />
+          <div className="relative bg-white p-6 rounded-lg shadow-lg max-w-md w-full">
+            <h2 className="text-xl font-semibold mb-2">Stop Early?</h2>
+            <p className="my-4 text-gray-700">
+              You've only been writing for {Math.floor(sessionTime / 60)} minutes. 
+              Are you sure you want to stop before reaching 10 minutes?
+            </p>
+            <div className="flex justify-end gap-4 mt-6">
+              <button
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-100"
+                onClick={() => setShowEarlyStopDialog(false)}
+              >
+                Continue Writing
+              </button>
+              <button 
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+                onClick={() => stopSession()}
+              >
+                Yes, Stop Session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Session Summary Dialog */}
+      {showSessionSummary && (
+        <div className="fixed inset-0 flex items-center justify-center z-20">
+          <div className="absolute inset-0 bg-black bg-opacity-50" onClick={() => setShowSessionSummary(false)} />
+          <div className="relative bg-white p-6 rounded-lg shadow-lg max-w-md w-full">
+            <h2 className="text-xl font-semibold mb-2">Session Complete</h2>
+            <div className="my-4 bg-gray-50 p-4 rounded whitespace-pre-wrap text-sm font-mono">
+              {sessionSummary}
+            </div>
+            <div className="flex justify-between gap-4 mt-6">
+              <button
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-100"
+                onClick={() => copyToClipboard(sessionSummary)}
+              >
+                Copy to Clipboard
+              </button>
+              <button 
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                onClick={() => setShowSessionSummary(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Manual Log Dialog */}
+      {showManualLog && (
+        <div className="fixed inset-0 flex items-center justify-center z-20">
+          <div className="absolute inset-0 bg-black bg-opacity-50" onClick={() => setShowManualLog(false)} />
+          <div className="relative bg-white p-6 rounded-lg shadow-lg max-w-md w-full z-10">
+            <h2 className="text-xl font-semibold mb-2">Log Manual Session</h2>
+            <div className="space-y-4 mt-4">
+              <div>
+                <label className="text-sm text-gray-700 mb-1 block">Writing Type <span className="text-red-500">*</span></label>
+                <select 
+                  value={manualSession.type} 
+                  onChange={(e) => setManualSession(prev => ({...prev, type: e.target.value}))}
+                  className="w-full p-2 border border-gray-300 rounded"
+                >
+                  <option value="">Select writing type...</option>
+                  <option value="prewriting">Prewriting</option>
+                  <option value="writing">Writing</option>
+                  <option value="rewriting">Rewriting</option>
+                  <option value="skillbuilding">Skillbuilding</option>
+                </select>
+              </div>
+              
+              <div>
+                <label className="text-sm text-gray-700 mb-1 block">Project Title <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  value={manualSession.title}
+                  onChange={(e) => setManualSession(prev => ({...prev, title: e.target.value}))}
+                  placeholder="e.g. Novel Chapter 3, Blog Post"
+                  className="w-full p-2 border border-gray-300 rounded"
+                />
+              </div>
+              
+              <div>
+                <label className="text-sm text-gray-700 mb-1 block">Duration (minutes) <span className="text-red-500">*</span></label>
+                <input
+                  type="number"
+                  value={manualSession.duration}
+                  onChange={(e) => setManualSession(prev => ({...prev, duration: e.target.value}))}
+                  placeholder="e.g. 45"
+                  min="1"
+                  max="240"
+                  className="w-full p-2 border border-gray-300 rounded"
+                />
+              </div>
+              
+              <div>
+                <label className="text-sm text-gray-700 mb-1 block">Start Time (optional)</label>
+                <input
+                  type="text"
+                  value={manualSession.startTime}
+                  onChange={(e) => setManualSession(prev => ({...prev, startTime: e.target.value}))}
+                  placeholder="e.g. 9:30"
+                  className="w-full p-2 border border-gray-300 rounded"
+                />
+              </div>
+              
+              <div>
+                <label className="text-sm text-gray-700 mb-1 block">Notes (optional)</label>
+                <textarea
+                  value={manualSession.notes}
+                  onChange={(e) => setManualSession(prev => ({...prev, notes: e.target.value}))}
+                  placeholder="Any notes about this session..."
+                  className="w-full p-2 border border-gray-300 rounded h-20"
+                />
+              </div>
+            </div>
+            
+            <div className="flex justify-end gap-4 mt-6">
+              <button
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-100"
+                onClick={() => {
+                  setManualSession({ type: '', title: '', duration: '', startTime: '', notes: '' });
+                  setShowManualLog(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button 
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                onClick={handleManualLog}
+                disabled={!manualSession.type || !manualSession.title || !manualSession.duration}
+              >
+                Log Session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default WritingTimer;
